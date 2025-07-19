@@ -5,9 +5,9 @@ import hmac
 import json
 
 # ===== 🔧 あなたのアクセス情報 =====
-access_key = "AKIAxxxxxxxxxxxxxxxx"
-secret_key = "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
-partner_tag = "yourtag-22"  # アソシエイトID
+access_key = "AKPAEEKWJP1752396396"
+secret_key = "zfDbpUflco4lP6PNdmxvCHbHGqSenn3fqQUrUyAF"
+partner_tag = "choshucrypter-22"  # アソシエイトID
 
 # ===== 📦 テストASIN =====
 payload = json.dumps({
