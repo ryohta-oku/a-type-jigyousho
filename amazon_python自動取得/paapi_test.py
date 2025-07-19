@@ -15,6 +15,7 @@ payload = json.dumps({
     "Resources": [
         "ItemInfo.Title",
         "Offers.Listings.Price",
+        "Images.Primary.Medium",
         "DetailPageURL"
     ],
     "PartnerTag": partner_tag,
@@ -33,9 +34,9 @@ def get_signature_key(key, date_stamp, region_name, service_name):
     k_signing = sign(k_service, 'aws4_request')
     return k_signing
 
-# ===== 🌐 エンドポイント情報 =====
-host = 'webservices.amazon.com'
-region = 'us-east-1'
+# ===== 🌐 エンドポイント情報（日本用に修正）=====
+host = 'webservices.amazon.co.jp'
+region = 'us-west-2'  # 日本のリージョン
 service = 'ProductAdvertisingAPI'
 endpoint = f'https://{host}/paapi5/getitems'
 
@@ -47,8 +48,8 @@ date_stamp = t.strftime('%Y%m%d')
 # ===== 📄 canonical request =====
 canonical_uri = '/paapi5/getitems'
 canonical_querystring = ''
-canonical_headers = f'host:{host}\n'
-signed_headers = 'host'
+canonical_headers = f'host:{host}\nx-amz-date:{amz_date}\n'  # x-amz-dateを追加
+signed_headers = 'host;x-amz-date'  # x-amz-dateを追加
 payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
 canonical_request = f'POST\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
 
@@ -67,12 +68,40 @@ authorization_header = (
 headers = {
     'Content-Type': 'application/json; charset=utf-8',
     'X-Amz-Date': amz_date,
-    'Authorization': authorization_header
+    'Authorization': authorization_header,
+    'X-Amz-Target': 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems'  # 追加
 }
 
 # ===== 🚀 リクエスト送信 =====
-response = requests.post(endpoint, headers=headers, data=payload)
+print("=== リクエスト情報 ===")
+print(f"エンドポイント: {endpoint}")
+print(f"日時: {amz_date}")
+print(f"パートナータグ: {partner_tag}")
+print(f"マーケットプレイス: www.amazon.co.jp")
+print("\n=== リクエスト送信中 ===")
 
-print(f"Status Code: {response.status_code}")
-print("Response Body:")
-print(response.text)
+try:
+    response = requests.post(endpoint, headers=headers, data=payload, timeout=30)
+    
+    print(f"Status Code: {response.status_code}")
+    print("Response Headers:")
+    for key, value in response.headers.items():
+        print(f"  {key}: {value}")
+    
+    print("\nResponse Body:")
+    try:
+        response_json = response.json()
+        print(json.dumps(response_json, indent=2, ensure_ascii=False))
+    except:
+        print(response.text)
+        
+except requests.exceptions.RequestException as e:
+    print(f"リクエストエラー: {e}")
+except Exception as e:
+    print(f"その他のエラー: {e}")
+
+# ===== 🔍 デバッグ情報 =====
+print("\n=== デバッグ情報 ===")
+print(f"Canonical Request:\n{canonical_request}")
+print(f"\nString to Sign:\n{string_to_sign}")
+print(f"\nAuthorization Header:\n{authorization_header}")
