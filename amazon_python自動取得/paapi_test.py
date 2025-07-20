@@ -202,7 +202,8 @@ print("1. Amazon Associates Central で PA-API アクセスを申請済みか確
 print("2. 新規アカウントの場合、最低3件の適格売上が必要")
 print("3. アクセスキーとシークレットキーが最新か確認")
 print("4. Partner Tag (Tracking ID) が正確か確認")
-print("5. Marketplace設定が適切か確認 (www.amazon.co.jp)")import requests
+print("5. Marketplace設定が適切か確認 (www.amazon.co.jp)")
+import requests
 import datetime
 import hashlib
 import hmac
