@@ -3,407 +3,332 @@ import datetime
 import hashlib
 import hmac
 import json
+import urllib.parse
+import time
 
-# ===== 🔧 あなたのアクセス情報 =====
+# ===== 🔧 設定情報 =====
 access_key = "AKPAEEKWJP1752396396"
 secret_key = "zfDbpUflco4lP6PNdmxvCHbHGqSenn3fqQUrUyAF"
 partner_tag = "choshucrypter-22"
 
-# ===== 📦 テストASIN（日本Amazon用）=====
-payload = json.dumps({
-    "ItemIds": ["B0BSFQBCBJ"],  # 日本で確実に存在するASIN (Nintendo Switch本体など)
-    "Resources": [
-        "ItemInfo.Title",
-        "Offers.Listings.Price",
-        "Images.Primary.Medium",
-        "ItemInfo.DetailPageURL"
-    ],
-    "PartnerTag": partner_tag,
-    "PartnerType": "Associates",
-    "Marketplace": "www.amazon.co.jp"
-})
-
-# ===== 🔐 署名関連 =====
-def sign(key, msg):
-    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
-
-def get_signature_key(key, date_stamp, region_name, service_name):
-    k_date = sign(('AWS4' + key).encode('utf-8'), date_stamp)
-    k_region = sign(k_date, region_name)
-    k_service = sign(k_region, service_name)
-    k_signing = sign(k_service, 'aws4_request')
-    return k_signing
-
-# ===== 🌐 エンドポイント情報（日本用）=====
-host = 'webservices.amazon.co.jp'
-region = 'us-west-2'  # 日本のPA-APIでもus-west-2を使用
-service = 'ProductAdvertisingAPI'
-endpoint = f'https://{host}/paapi5/getitems'
-
-# ===== 🕒 タイムスタンプ =====
-t = datetime.datetime.now(datetime.UTC)
-amz_date = t.strftime('%Y%m%dT%H%M%SZ')
-date_stamp = t.strftime('%Y%m%d')
-
-# ===== 📄 canonical request =====
-canonical_uri = '/paapi5/getitems'
-canonical_querystring = ''
-canonical_headers = f'host:{host}\nx-amz-date:{amz_date}\n'
-signed_headers = 'host;x-amz-date'
-payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
-canonical_request = f'POST\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
-
-# ===== 🔏 署名の作成 =====
-algorithm = 'AWS4-HMAC-SHA256'
-credential_scope = f'{date_stamp}/{region}/{service}/aws4_request'
-string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
-signing_key = get_signature_key(secret_key, date_stamp, region, service)
-signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-
-authorization_header = (
-    f'{algorithm} Credential={access_key}/{credential_scope}, '
-    f'SignedHeaders={signed_headers}, Signature={signature}'
-)
-
-headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'X-Amz-Date': amz_date,
-    'Authorization': authorization_header,
-    'X-Amz-Target': 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems'
+# ===== 🌐 地域別エンドポイント設定 =====
+REGIONS = {
+    'japan': {
+        'host': 'webservices.amazon.co.jp',
+        'region': 'us-west-2',
+        'marketplace': 'www.amazon.co.jp'
+    },
+    'us': {
+        'host': 'webservices.amazon.com', 
+        'region': 'us-east-1',
+        'marketplace': 'www.amazon.com'
+    }
 }
 
-# ===== 🔍 診断機能追加 =====
-def diagnose_credentials():
-    """認証情報の基本チェック"""
-    issues = []
-    
-    if not access_key or len(access_key) != 20:
-        issues.append("❌ Access Keyが無効です（20文字である必要があります）")
-    else:
-        issues.append("✅ Access Key形式OK")
-    
-    if not secret_key or len(secret_key) != 40:
-        issues.append("❌ Secret Keyが無効です（40文字である必要があります）")
-    else:
-        issues.append("✅ Secret Key形式OK")
+class AmazonPAAPI:
+    def __init__(self, access_key, secret_key, partner_tag, region_config):
+        self.access_key = access_key
+        self.secret_key = secret_key
+        self.partner_tag = partner_tag
+        self.host = region_config['host']
+        self.region = region_config['region']
+        self.marketplace = region_config['marketplace']
+        self.service = 'ProductAdvertisingAPI'
+        # 🔧 修正: 正しいエンドポイント
+        self.endpoint = f'https://{self.host}/paapi5/getitems'
         
-    if not partner_tag:
-        issues.append("❌ Partner Tagが設定されていません")
-    else:
-        issues.append("✅ Partner Tag設定済み")
-    
-    return issues
+    def sign(self, key, msg):
+        return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
 
-def test_different_asins():
-    """複数のASINでテスト"""
-    test_asins = [
-        "B0BSFQBCBJ",  # Nintendo Switch (新しめ)
-        "B07HCSQ48C",  # Echo Dot 3rd Gen
-        "B08N5WRWNW",  # 元のASIN
-    ]
-    
-    for asin in test_asins:
-        print(f"\n--- {asin} をテスト中 ---")
+    def get_signature_key(self, key, date_stamp, region_name, service_name):
+        k_date = self.sign(('AWS4' + key).encode('utf-8'), date_stamp)
+        k_region = self.sign(k_date, region_name)
+        k_service = self.sign(k_region, service_name)
+        k_signing = self.sign(k_service, 'aws4_request')
+        return k_signing
+
+    def create_canonical_request(self, payload, amz_date):
+        """正規化リクエストを作成"""
+        # 🔧 修正: エンドポイントと一致させる
+        canonical_uri = '/paapi5/getitems'
+        canonical_querystring = ''
+        canonical_headers = f'host:{self.host}\nx-amz-date:{amz_date}\nx-amz-target:com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems\n'
+        signed_headers = 'host;x-amz-date;x-amz-target'
+        payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
         
-        test_payload = json.dumps({
-            "ItemIds": [asin],
-            "Resources": ["ItemInfo.Title"],
-            "PartnerTag": partner_tag,
-            "PartnerType": "Associates",
-            "Marketplace": "www.amazon.co.jp"
-        })
+        canonical_request = (
+            f'POST\n'
+            f'{canonical_uri}\n'
+            f'{canonical_querystring}\n'
+            f'{canonical_headers}\n'
+            f'{signed_headers}\n'
+            f'{payload_hash}'
+        )
         
-        # 新しい署名を生成
-        payload_hash = hashlib.sha256(test_payload.encode('utf-8')).hexdigest()
-        canonical_request = f'POST\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
-        string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
+        return canonical_request, signed_headers
+
+    def create_signature(self, canonical_request, amz_date, date_stamp, signed_headers):
+        """署名を作成"""
+        algorithm = 'AWS4-HMAC-SHA256'
+        credential_scope = f'{date_stamp}/{self.region}/{self.service}/aws4_request'
+        
+        string_to_sign = (
+            f'{algorithm}\n'
+            f'{amz_date}\n'
+            f'{credential_scope}\n'
+            f'{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
+        )
+        
+        signing_key = self.get_signature_key(self.secret_key, date_stamp, self.region, self.service)
         signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
         
-        test_headers = headers.copy()
-        test_headers['Authorization'] = f'{algorithm} Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
+        authorization_header = (
+            f'{algorithm} '
+            f'Credential={self.access_key}/{credential_scope}, '
+            f'SignedHeaders={signed_headers}, '
+            f'Signature={signature}'
+        )
         
-        try:
-            response = requests.post(endpoint, headers=test_headers, data=test_payload, timeout=30)
-            print(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                print("✅ 成功!")
-                return True
-            else:
-                print("❌ 失敗")
+        return authorization_header
+
+    def get_items(self, item_ids, resources=None, retry_count=3):
+        """商品情報を取得"""
+        if resources is None:
+            resources = [
+                "ItemInfo.Title",
+                "Offers.Listings.Price",
+                "Images.Primary.Medium"
+            ]
+        
+        # 🔧 修正: Operation パラメータを追加
+        payload = json.dumps({
+            "Operation": "GetItems",
+            "ItemIds": item_ids,
+            "Resources": resources,
+            "PartnerTag": self.partner_tag,
+            "PartnerType": "Associates",
+            "Marketplace": self.marketplace
+        }, separators=(',', ':'))
+        
+        for attempt in range(retry_count):
+            try:
+                # 新しいタイムスタンプを生成
+                t = datetime.datetime.now(datetime.UTC)
+                amz_date = t.strftime('%Y%m%dT%H%M%SZ')
+                date_stamp = t.strftime('%Y%m%d')
                 
-        except Exception as e:
-            print(f"エラー: {e}")
-    
-    return False
+                # 署名を作成
+                canonical_request, signed_headers = self.create_canonical_request(payload, amz_date)
+                authorization_header = self.create_signature(canonical_request, amz_date, date_stamp, signed_headers)
+                
+                # 🔧 修正: ヘッダーを正しい順序で設定
+                headers = {
+                    'Content-Type': 'application/json; charset=utf-8',
+                    'Host': self.host,
+                    'X-Amz-Date': amz_date,
+                    'X-Amz-Target': 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems',
+                    'Authorization': authorization_header
+                }
+                
+                print(f"試行 {attempt + 1}: {self.endpoint}")
+                print(f"Marketplace: {self.marketplace}")
+                print(f"Payload: {payload}")
+                
+                # リクエスト送信
+                response = requests.post(
+                    self.endpoint,
+                    headers=headers,
+                    data=payload,
+                    timeout=30
+                )
+                
+                return response
+                
+            except Exception as e:
+                print(f"試行 {attempt + 1} でエラー: {e}")
+                if attempt < retry_count - 1:
+                    time.sleep(2)
+                else:
+                    raise e
 
-# ===== 🔍 事前診断 =====
-print("=== 🔍 事前診断 ===")
-diagnosis = diagnose_credentials()
-for issue in diagnosis:
-    print(issue)
-
-print("\n=== 📝 重要な確認事項 ===")
-print("1. Amazon Associates アカウントが承認済みか")
-print("2. PA-API 5.0 のアクセス権限があるか")
-print("3. 過去3日以内にAmazonで売上があるか（新規アカウントの場合）")
-print("4. 正しいリージョンのエンドポイントを使用しているか")
-
-print(f"\n=== リクエスト情報 ===")
-print(f"エンドポイント: {endpoint}")
-print(f"日時: {amz_date}")
-print(f"パートナータグ: {partner_tag}")
-print(f"リージョン: {region}")
-
-# ===== 🚀 メインテスト =====
-print("\n=== 🚀 メインテスト実行 ===")
-try:
-    response = requests.post(endpoint, headers=headers, data=payload, timeout=30)
-    
+def diagnose_response(response):
+    """レスポンスを詳細に診断"""
     print(f"Status Code: {response.status_code}")
+    print(f"Headers: {dict(response.headers)}")
     
     if response.status_code == 200:
         print("✅ 成功!")
-        response_json = response.json()
-        print(json.dumps(response_json, indent=2, ensure_ascii=False))
-    else:
-        print("❌ エラー:")
-        print("Response Body:")
         try:
             response_json = response.json()
             print(json.dumps(response_json, indent=2, ensure_ascii=False))
-        except:
-            print(response.text)
+            return True
+        except json.JSONDecodeError:
+            print("❌ JSONデコードエラー")
+            print("Response text:", response.text)
+            return False
+    else:
+        print("❌ エラー:")
+        try:
+            response_json = response.json()
+            print(json.dumps(response_json, indent=2, ensure_ascii=False))
+            
+            if 'Errors' in response_json:
+                for error in response_json['Errors']:
+                    error_code = error.get('Code', 'Unknown')
+                    error_message = error.get('Message', 'No message')
+                    print(f"エラーコード: {error_code}")
+                    print(f"エラーメッセージ: {error_message}")
+                    
+        except json.JSONDecodeError:
+            print("Response text:", response.text)
         
-        # エラー別対応
-        error_solutions = {
-            400: "🔧 リクエスト形式エラー - JSONペイロードやヘッダーを確認",
-            403: "🔐 認証エラー - Access Key, Secret Key, Partner Tagを確認",
-            404: "🔍 リソース未発見 - ASIN存在確認 or エンドポイント確認",
-            429: "⏰ レート制限 - しばらく待ってから再実行",
-            500: "🏥 サーバーエラー - Amazon側の問題、時間をおいて再試行"
+        error_details = {
+            400: {
+                'title': '🔧 リクエスト形式エラー',
+                'solutions': [
+                    'JSONペイロードの構文を確認',
+                    '必須パラメータ(Operation)が不足していないか確認',
+                    'Content-Typeヘッダーが正しいか確認'
+                ]
+            },
+            403: {
+                'title': '🔐 認証/認可エラー',
+                'solutions': [
+                    'Access KeyとSecret Keyが正しいか確認',
+                    'Partner Tag (Tracking ID) が正しいか確認',
+                    'Amazon Associates アカウントが承認済みか確認',
+                    'PA-API 5.0のアクセス権限があるか確認',
+                    '新規アカウントの場合、売上実績要件を満たしているか確認'
+                ]
+            },
+            404: {
+                'title': '🔍 リソース未発見',
+                'solutions': [
+                    'エンドポイントURLが正しいか確認',
+                    'ASINが存在するか確認',
+                    'Marketplaceが正しいか確認',
+                    'リージョン設定が適切か確認'
+                ]
+            },
+            429: {
+                'title': '⏰ レート制限',
+                'solutions': [
+                    'リクエスト頻度を下げる',
+                    'しばらく時間をおいて再試行'
+                ]
+            },
+            500: {
+                'title': '🏥 サーバーエラー',
+                'solutions': [
+                    'Amazon側の一時的な問題の可能性',
+                    '時間をおいて再試行',
+                    'リクエストペイロードの内容を確認'
+                ]
+            }
         }
         
-        if response.status_code in error_solutions:
-            print(f"\n💡 {error_solutions[response.status_code]}")
+        if response.status_code in error_details:
+            error_info = error_details[response.status_code]
+            print(f"\n💡 {error_info['title']}")
+            for solution in error_info['solutions']:
+                print(f"   • {solution}")
         
-        # 追加テスト実行
-        print("\n=== 🔄 追加診断テスト ===")
-        if not test_different_asins():
-            print("\n❗ 全てのASINでエラー - 認証情報またはアカウント設定に問題がある可能性")
-            
-except requests.exceptions.RequestException as e:
-    print(f"ネットワークエラー: {e}")
-except Exception as e:
-    print(f"予期しないエラー: {e}")
+        return False
 
-print("\n=== 🛠️ トラブルシューティング ===")
-print("1. Amazon Associates Central で PA-API アクセスを申請済みか確認")
-print("2. 新規アカウントの場合、最低3件の適格売上が必要")
-print("3. アクセスキーとシークレットキーが最新か確認")
-print("4. Partner Tag (Tracking ID) が正確か確認")
-print("5. Marketplace設定が適切か確認 (www.amazon.co.jp)")import requests
-import datetime
-import hashlib
-import hmac
-import json
-
-# ===== 🔧 あなたのアクセス情報 =====
-access_key = "AKPAEEKWJP1752396396"
-secret_key = "zfDbpUflco4lP6PNdmxvCHbHGqSenn3fqQUrUyAF"
-partner_tag = "choshucrypter-22"
-
-# ===== 📦 テストASIN（日本Amazon用）=====
-payload = json.dumps({
-    "ItemIds": ["B0BSFQBCBJ"],  # 日本で確実に存在するASIN (Nintendo Switch本体など)
-    "Resources": [
-        "ItemInfo.Title",
-        "Offers.Listings.Price",
-        "Images.Primary.Medium",
-        "ItemInfo.DetailPageURL"
-    ],
-    "PartnerTag": partner_tag,
-    "PartnerType": "Associates",
-    "Marketplace": "www.amazon.co.jp"
-})
-
-# ===== 🔐 署名関連 =====
-def sign(key, msg):
-    return hmac.new(key, msg.encode('utf-8'), hashlib.sha256).digest()
-
-def get_signature_key(key, date_stamp, region_name, service_name):
-    k_date = sign(('AWS4' + key).encode('utf-8'), date_stamp)
-    k_region = sign(k_date, region_name)
-    k_service = sign(k_region, service_name)
-    k_signing = sign(k_service, 'aws4_request')
-    return k_signing
-
-# ===== 🌐 エンドポイント情報（日本用）=====
-host = 'webservices.amazon.co.jp'
-region = 'us-west-2'  # 日本のPA-APIでもus-west-2を使用
-service = 'ProductAdvertisingAPI'
-endpoint = f'https://{host}/paapi5/getitems'
-
-# ===== 🕒 タイムスタンプ =====
-t = datetime.datetime.now(datetime.UTC)
-amz_date = t.strftime('%Y%m%dT%H%M%SZ')
-date_stamp = t.strftime('%Y%m%d')
-
-# ===== 📄 canonical request =====
-canonical_uri = '/paapi5/getitems'
-canonical_querystring = ''
-canonical_headers = f'host:{host}\nx-amz-date:{amz_date}\n'
-signed_headers = 'host;x-amz-date'
-payload_hash = hashlib.sha256(payload.encode('utf-8')).hexdigest()
-canonical_request = f'POST\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
-
-# ===== 🔏 署名の作成 =====
-algorithm = 'AWS4-HMAC-SHA256'
-credential_scope = f'{date_stamp}/{region}/{service}/aws4_request'
-string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
-signing_key = get_signature_key(secret_key, date_stamp, region, service)
-signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
-
-authorization_header = (
-    f'{algorithm} Credential={access_key}/{credential_scope}, '
-    f'SignedHeaders={signed_headers}, Signature={signature}'
-)
-
-headers = {
-    'Content-Type': 'application/json; charset=utf-8',
-    'X-Amz-Date': amz_date,
-    'Authorization': authorization_header,
-    'X-Amz-Target': 'com.amazon.paapi5.v1.ProductAdvertisingAPIv1.GetItems'
-}
-
-# ===== 🔍 診断機能追加 =====
-def diagnose_credentials():
-    """認証情報の基本チェック"""
-    issues = []
+def test_different_regions_and_asins():
+    """複数のリージョンとASINでテスト"""
     
-    if not access_key or len(access_key) != 20:
-        issues.append("❌ Access Keyが無効です（20文字である必要があります）")
-    else:
-        issues.append("✅ Access Key形式OK")
-    
-    if not secret_key or len(secret_key) != 40:
-        issues.append("❌ Secret Keyが無効です（40文字である必要があります）")
-    else:
-        issues.append("✅ Secret Key形式OK")
-        
-    if not partner_tag:
-        issues.append("❌ Partner Tagが設定されていません")
-    else:
-        issues.append("✅ Partner Tag設定済み")
-    
-    return issues
-
-def test_different_asins():
-    """複数のASINでテスト"""
-    test_asins = [
-        "B0BSFQBCBJ",  # Nintendo Switch (新しめ)
-        "B07HCSQ48C",  # Echo Dot 3rd Gen
-        "B08N5WRWNW",  # 元のASIN
+    # 🔧 修正: より確実に存在するASINでテスト
+    test_data = [
+        {
+            'region': 'japan',
+            'asins': ['B07YD2MXKP', 'B08N5WRWNW']  # より新しいASIN
+        },
+        {
+            'region': 'us', 
+            'asins': ['B08N5WRWNW', 'B073H9RQ9Q']
+        }
     ]
     
-    for asin in test_asins:
-        print(f"\n--- {asin} をテスト中 ---")
+    for test_case in test_data:
+        region = test_case['region']
+        asins = test_case['asins']
         
-        test_payload = json.dumps({
-            "ItemIds": [asin],
-            "Resources": ["ItemInfo.Title"],
-            "PartnerTag": partner_tag,
-            "PartnerType": "Associates",
-            "Marketplace": "www.amazon.co.jp"
-        })
+        print(f"\n{'='*50}")
+        print(f"🌍 {region.upper()}リージョンでテスト")
+        print(f"{'='*50}")
         
-        # 新しい署名を生成
-        payload_hash = hashlib.sha256(test_payload.encode('utf-8')).hexdigest()
-        canonical_request = f'POST\n{canonical_uri}\n{canonical_querystring}\n{canonical_headers}\n{signed_headers}\n{payload_hash}'
-        string_to_sign = f'{algorithm}\n{amz_date}\n{credential_scope}\n{hashlib.sha256(canonical_request.encode("utf-8")).hexdigest()}'
-        signature = hmac.new(signing_key, string_to_sign.encode('utf-8'), hashlib.sha256).hexdigest()
+        api = AmazonPAAPI(access_key, secret_key, partner_tag, REGIONS[region])
         
-        test_headers = headers.copy()
-        test_headers['Authorization'] = f'{algorithm} Credential={access_key}/{credential_scope}, SignedHeaders={signed_headers}, Signature={signature}'
-        
-        try:
-            response = requests.post(endpoint, headers=test_headers, data=test_payload, timeout=30)
-            print(f"Status: {response.status_code}")
-            
-            if response.status_code == 200:
-                print("✅ 成功!")
-                return True
-            else:
-                print("❌ 失敗")
+        for asin in asins:
+            print(f"\n--- ASIN: {asin} ---")
+            try:
+                response = api.get_items([asin], ["ItemInfo.Title"])
+                success = diagnose_response(response)
                 
-        except Exception as e:
-            print(f"エラー: {e}")
+                if success:
+                    print(f"✅ {region}リージョンで成功!")
+                    return True
+                    
+            except Exception as e:
+                print(f"例外エラー: {e}")
     
     return False
 
-# ===== 🔍 事前診断 =====
-print("=== 🔍 事前診断 ===")
-diagnosis = diagnose_credentials()
-for issue in diagnosis:
-    print(issue)
-
-print("\n=== 📝 重要な確認事項 ===")
-print("1. Amazon Associates アカウントが承認済みか")
-print("2. PA-API 5.0 のアクセス権限があるか")
-print("3. 過去3日以内にAmazonで売上があるか（新規アカウントの場合）")
-print("4. 正しいリージョンのエンドポイントを使用しているか")
-
-print(f"\n=== リクエスト情報 ===")
-print(f"エンドポイント: {endpoint}")
-print(f"日時: {amz_date}")
-print(f"パートナータグ: {partner_tag}")
-print(f"リージョン: {region}")
-
-# ===== 🚀 メインテスト =====
-print("\n=== 🚀 メインテスト実行 ===")
-try:
-    response = requests.post(endpoint, headers=headers, data=payload, timeout=30)
+def run_comprehensive_test():
+    """包括的なテストを実行"""
+    print("🔍 Amazon PA-API 5.0 包括的テスト開始")
+    print("=" * 60)
     
-    print(f"Status Code: {response.status_code}")
-    
-    if response.status_code == 200:
-        print("✅ 成功!")
-        response_json = response.json()
-        print(json.dumps(response_json, indent=2, ensure_ascii=False))
+    print("\n=== 📋 認証情報チェック ===")
+    if len(access_key) == 20:
+        print("✅ Access Key形式: OK")
     else:
-        print("❌ エラー:")
-        print("Response Body:")
-        try:
-            response_json = response.json()
-            print(json.dumps(response_json, indent=2, ensure_ascii=False))
-        except:
-            print(response.text)
+        print("❌ Access Key形式: NG (20文字である必要があります)")
+    
+    if len(secret_key) == 40:
+        print("✅ Secret Key形式: OK")
+    else:
+        print("❌ Secret Key形式: NG (40文字である必要があります)")
+    
+    if partner_tag:
+        print("✅ Partner Tag: 設定済み")
+    else:
+        print("❌ Partner Tag: 未設定")
+    
+    print("\n=== 📝 重要な確認事項 ===")
+    important_checks = [
+        "Amazon Associates アカウントが承認済みか",
+        "PA-API 5.0 のアクセス権限が付与されているか",
+        "新規アカウントの場合、適格売上要件を満たしているか",
+        "Access KeyとSecret Keyが最新のものか",
+        "Partner Tag (Tracking ID) が正確か"
+    ]
+    
+    for i, check in enumerate(important_checks, 1):
+        print(f"{i}. {check}")
+    
+    print("\n=== 🚀 テスト実行 ===")
+    success = test_different_regions_and_asins()
+    
+    if not success:
+        print("\n" + "="*60)
+        print("❗ 全てのテストが失敗しました")
+        print("="*60)
+        print("\n🛠️ 主要なトラブルシューティング手順:")
+        print("1. Amazon Associates Central にログインして以下を確認:")
+        print("   • アカウントステータスが「承認済み」か")
+        print("   • PA-API利用申請が承認されているか")
+        print("   • 最近3日以内に適格売上があるか（新規の場合）")
+        print("\n2. 認証情報の確認:")
+        print("   • Amazon Associates Central の「ツール」→「Product Advertising API」から")
+        print("   • 最新のAccess KeyとSecret Keyを取得")
+        print("   • Partner Tag (Tracking ID) が正しいか確認")
+        print("\n3. アカウント要件:")
+        print("   • 新規アカウント: 登録後120日以内に3件以上の適格売上が必要")
+        print("   • 既存アカウント: 過去30日以内に売上実績要件")
         
-        # エラー別対応
-        error_solutions = {
-            400: "🔧 リクエスト形式エラー - JSONペイロードやヘッダーを確認",
-            403: "🔐 認証エラー - Access Key, Secret Key, Partner Tagを確認",
-            404: "🔍 リソース未発見 - ASIN存在確認 or エンドポイント確認",
-            429: "⏰ レート制限 - しばらく待ってから再実行",
-            500: "🏥 サーバーエラー - Amazon側の問題、時間をおいて再試行"
-        }
-        
-        if response.status_code in error_solutions:
-            print(f"\n💡 {error_solutions[response.status_code]}")
-        
-        # 追加テスト実行
-        print("\n=== 🔄 追加診断テスト ===")
-        if not test_different_asins():
-            print("\n❗ 全てのASINでエラー - 認証情報またはアカウント設定に問題がある可能性")
-            
-except requests.exceptions.RequestException as e:
-    print(f"ネットワークエラー: {e}")
-except Exception as e:
-    print(f"予期しないエラー: {e}")
+    return success
 
-print("\n=== 🛠️ トラブルシューティング ===")
-print("1. Amazon Associates Central で PA-API アクセスを申請済みか確認")
-print("2. 新規アカウントの場合、最低3件の適格売上が必要")
-print("3. アクセスキーとシークレットキーが最新か確認")
-print("4. Partner Tag (Tracking ID) が正確か確認")
-print("5. Marketplace設定が適切か確認 (www.amazon.co.jp)")
+if __name__ == "__main__":
+    run_comprehensive_test()
